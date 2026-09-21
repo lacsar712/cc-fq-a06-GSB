@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -77,3 +77,42 @@ class JobListItem(BaseModel):
 class HealthOut(BaseModel):
     status: str
     service: str
+
+
+# ---- 失败归因与话术聚类 ----
+
+
+class FailureJobRef(BaseModel):
+    job_id: int
+    sample_id: int | None
+    sample_name: str
+    is_broken: bool | None
+    status: str
+    created_by: str
+    created_at: datetime | None
+    message: str | None
+
+
+class MessageClusterOut(BaseModel):
+    cluster_prefix: str
+    cluster_size: int
+    latest_job_id: int
+    latest_job_created_at: datetime | None
+    sample_name: str
+    latest_message: str | None
+    recent_jobs: list[FailureJobRef]
+
+
+class ActorFailureOut(BaseModel):
+    actor_name: str
+    failure_count: int
+    latest_failure_at: datetime | None
+    clusters: list[MessageClusterOut]
+
+
+class AttributionOut(BaseModel):
+    start_date: date | None
+    end_date: date | None
+    is_broken: bool | None
+    total_failures: int
+    actors: list[ActorFailureOut]

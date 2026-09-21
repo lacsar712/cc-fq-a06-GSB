@@ -1,11 +1,20 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+import csv
+import io
+from datetime import date
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 
+from app import attribution
 from app.auth import authenticate_user, create_access_token, get_current_user, require_bioops
 from app.database import SessionLocal, get_db
 from app.models import Job, JobStage, Sample
 from app.pipeline.runner import create_job_stages, run_pipeline_sync
 from app.schemas import (
+    ActorFailureOut,
+    AttributionOut,
+    FailureJobRef,
     HealthOut,
     JobCreate,
     JobListItem,
@@ -126,4 +135,87 @@ def get_job_stages(
         .filter(JobStage.job_id == job_id)
         .order_by(JobStage.stage_order)
         .all()
+    )
+
+
+# ---- 失败归因与话术聚类（bioops / auditor 均只读）----
+
+
+def _validate_range(start_date: date | None, end_date: date | None) -> None:
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(status_code=400, detail="结束日期不能早于开始日期")
+
+
+@router.get("/attribution/failures", response_model=AttributionOut)
+def get_failure_attribution(
+    start_date: date | None = Query(default=None, description="起始日期（含当天）"),
+    end_date: date | None = Query(default=None, description="结束日期（含当天）"),
+    is_broken: bool | None = Query(default=None, description="样例是否损坏：true/false，不传为全部"),
+    _user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """按失败 Actor 计数，Actor 内再按失败消息前缀聚类。跳过（skipped）阶段不计入。"""
+    _validate_range(start_date, end_date)
+    stages = attribution.query_failed_stages(db, start_date, end_date, is_broken)
+    actors = attribution.build_attribution(stages)
+    return AttributionOut(
+        start_date=start_date,
+        end_date=end_date,
+        is_broken=is_broken,
+        total_failures=len(stages),
+        actors=[ActorFailureOut(**a) for a in actors],
+    )
+
+
+@router.get(
+    "/attribution/failures/{actor_name}/jobs",
+    response_model=list[FailureJobRef],
+)
+def get_cluster_jobs(
+    actor_name: str,
+    cluster_prefix: str = Query(..., description="消息簇归一化前缀"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    is_broken: bool | None = Query(default=None),
+    _user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """某失败 Actor 下单个消息前缀簇的全部失败作业（点簇下钻）。"""
+    _validate_range(start_date, end_date)
+    stages = attribution.query_failed_stages(
+        db, start_date, end_date, is_broken, actor_name=actor_name
+    )
+    jobs = attribution.build_cluster_jobs(stages, cluster_prefix)
+    return [FailureJobRef(**j) for j in jobs]
+
+
+@router.get("/attribution/export")
+def export_failure_attribution(
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    is_broken: bool | None = Query(default=None),
+    _user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """下载当前筛选结果的后端摘录（CSV，一个失败阶段一行）。"""
+    _validate_range(start_date, end_date)
+    stages = attribution.query_failed_stages(db, start_date, end_date, is_broken)
+    rows = attribution.export_rows(stages)
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=attribution.EXPORT_FIELDS, lineterminator="\n"
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    csv_bytes = buffer.getvalue().encode("utf-8-sig")
+
+    filename = "failure_attribution.csv"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"; filename*=UTF-8\'\'{filename}',
+            "X-Total-Failures": str(len(rows)),
+        },
     )

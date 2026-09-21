@@ -1,6 +1,6 @@
 # FASTQ 质控流水线台（FASTQ QC Pipeline Console）
 
-从零实现的全栈演示：上传/选择小型 FASTQ → **Actor 队列流水线**质控 → 查看阶段状态与指标。
+从零实现的全栈演示：上传/选择小型 FASTQ → **Actor 队列流水线**质控 → 查看阶段状态与指标；并提供**失败归因与话术聚类台**，按失败 Actor 计数、按消息前缀聚类，支持时间与样例类型（损坏/合格）切开看。
 
 ## 技术栈
 
@@ -49,6 +49,17 @@ docker compose up --build
 5. 退出，用 `auditor` / `audit123456` 登录：可看历史与详情，提交作业接口返回 403 / 前端无提交入口。
 6. 健康检查：`curl http://localhost:8184/api/health`
 
+### 失败归因台验收（核心口令）
+
+多跑几次损坏样例（样例库选 `demo-broken-malformed` 重复提交 3+ 次）后，打开顶部 **失败归因台**：
+
+1. 看到 **ParseActor 失败计数**，计数等于损坏作业次数；因 ParseActor 失败而 skipped 的后续阶段**不计入**。
+2. 展开 ParseActor，看到按失败消息前缀归一化的**消息簇**（行号/实际输入值已归一，如「第 # 行分隔符必须以 + 开头，实际为:」），簇大小随次数增长，并展示最近作业。
+3. 点簇内「作业 #N」直接进入该作业原详情页。
+4. 用起止日期、样例类型（损坏/合格）筛选——过滤全部在服务端完成；点「下载摘录」得到当前筛选结果的 UTF-8 CSV，含
+   `job_id, actor_name, stage_order, stage_status, cluster_prefix, message, sample_id, sample_name, is_broken, created_by, job_created_at, stage_started_at, stage_finished_at` 字段。
+5. 两个账号（`bioops` / `auditor`）均可只读查看归因台与下载摘录；归因台不提供任何写操作入口。
+
 ## API
 
 - `POST /api/auth/login`
@@ -58,6 +69,11 @@ docker compose up --build
 - `GET  /api/jobs`
 - `GET  /api/jobs/{id}`
 - `GET  /api/jobs/{id}/stages`
+- `GET  /api/attribution/failures?start_date=&end_date=&is_broken=true|false` — 按 Actor 计数 + 消息前缀簇（两角色只读）
+- `GET  /api/attribution/failures/{actor}/jobs?cluster_prefix=...&start_date=&end_date=&is_broken=` — 簇内全部失败作业
+- `GET  /api/attribution/export?start_date=&end_date=&is_broken=` — 当前筛选结果 CSV 摘录下载
+
+归因口径：仅统计 `job_stages.status='failed'`；`skipped`（因上游失败跳过）不计入失败归因。日期按作业创建时间、含起止当天；`is_broken` 经样例关联过滤，自定义输入不参与损坏/合格分档。
 
 ## 本地单测（可选）
 
@@ -82,9 +98,10 @@ pytest -q
     data/{good,broken}.fastq
     app/
       main.py api.py auth.py models.py schemas.py
+      attribution.py   # 失败归因聚合与 CSV 摘录
       pipeline/{actors,runner}.py
-    tests/test_actors.py
+    tests/{test_actors,test_attribution}.py
   frontend/
     Dockerfile nginx.conf
-    src/pages/{Login,Samples,JobSubmit,JobDetail,JobHistory}Page.vue
+    src/pages/{Login,Samples,JobSubmit,JobDetail,JobHistory,Attribution}Page.vue
 ```
