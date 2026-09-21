@@ -1,6 +1,6 @@
 # FASTQ 质控流水线台（FASTQ QC Pipeline Console）
 
-从零实现的全栈演示：上传/选择小型 FASTQ → **Actor 队列流水线**质控 → 查看阶段状态与指标。
+从零实现的全栈演示：上传/选择小型 FASTQ → **Actor 队列流水线**质控 → 查看阶段状态与指标 → **失败归因台**按 Actor 计数并按失败消息前缀聚类。
 
 ## 技术栈
 
@@ -46,8 +46,13 @@ docker compose up --build
 2. **样例库** 看到 2 条样例 → 选合格样例 **提交质控作业**。
 3. 作业详情页看到四个 Actor 阶段均为成功，指标卡出现 `reads` / `mean_quality` / `n_rate`。
 4. 再跑损坏样例：`ParseActor` = failed，其余 = skipped。
-5. 退出，用 `auditor` / `audit123456` 登录：可看历史与详情，提交作业接口返回 403 / 前端无提交入口。
-6. 健康检查：`curl http://localhost:8184/api/health`
+5. 多跑几次损坏样例后打开 **失败归因**（两角色均可见，只读）：
+   - 按失败 Actor 计数（`ParseActor` 计数 = 损坏样例失败次数，skipped 阶段不计入）；
+   - 同一 Actor 下按失败消息前缀聚类，展示簇大小与最近作业，点作业 ID 进原详情页；
+   - 可按起止日期、样例是否损坏过滤（服务端过滤）；
+   - **下载摘录** 导出当前筛选结果的 CSV（含 作业ID/样例/是否损坏/失败Actor/消息前缀簇/失败消息/提交人/作业创建时间/阶段完成时间）。
+6. 退出，用 `auditor` / `audit123456` 登录：可看历史、详情与失败归因台，提交作业接口返回 403 / 前端无提交入口。
+7. 健康检查：`curl http://localhost:8184/api/health`
 
 ## API
 
@@ -58,6 +63,8 @@ docker compose up --build
 - `GET  /api/jobs`
 - `GET  /api/jobs/{id}`
 - `GET  /api/jobs/{id}/stages`
+- `GET  /api/failures/attribution?start=&end=&broken=all|true|false`
+- `GET  /api/failures/attribution/export`（同参，返回 CSV 摘录）
 
 ## 本地单测（可选）
 
@@ -81,10 +88,10 @@ pytest -q
     seed.py
     data/{good,broken}.fastq
     app/
-      main.py api.py auth.py models.py schemas.py
+      main.py api.py auth.py models.py schemas.py attribution.py
       pipeline/{actors,runner}.py
-    tests/test_actors.py
+    tests/{test_actors,test_attribution}.py
   frontend/
     Dockerfile nginx.conf
-    src/pages/{Login,Samples,JobSubmit,JobDetail,JobHistory}Page.vue
+    src/pages/{Login,Samples,JobSubmit,JobDetail,JobHistory,FailureAttribution}Page.vue
 ```

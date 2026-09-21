@@ -77,3 +77,29 @@ class JobListItem(BaseModel):
 class HealthOut(BaseModel):
     status: str
     service: str
+
+
+class RecentFailureJob(BaseModel):
+    job_id: int
+    sample_name: str
+    is_broken: bool
+    created_by: str
+    created_at: datetime | None
+    message: str | None
+
+
+class MessageClusterOut(BaseModel):
+    prefix: str
+    size: int
+    recent_jobs: list[RecentFailureJob]
+
+
+class ActorAttributionOut(BaseModel):
+    actor_name: str
+    failure_count: int
+    clusters: list[MessageClusterOut]
+
+
+class AttributionOut(BaseModel):
+    total_failures: int
+    actors: list[ActorAttributionOut]

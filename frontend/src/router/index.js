@@ -5,6 +5,7 @@ import SamplesPage from '../pages/SamplesPage.vue'
 import JobSubmitPage from '../pages/JobSubmitPage.vue'
 import JobDetailPage from '../pages/JobDetailPage.vue'
 import JobHistoryPage from '../pages/JobHistoryPage.vue'
+import FailureAttributionPage from '../pages/FailureAttributionPage.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -15,6 +16,7 @@ const router = createRouter({
     { path: '/jobs/new', name: 'job-submit', component: JobSubmitPage, meta: { bioops: true } },
     { path: '/jobs', name: 'jobs', component: JobHistoryPage },
     { path: '/jobs/:id', name: 'job-detail', component: JobDetailPage },
+    { path: '/failures', name: 'failures', component: FailureAttributionPage },
   ],
 })
 

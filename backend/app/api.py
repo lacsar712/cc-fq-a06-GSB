@@ -1,11 +1,19 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+import csv
+import io
+from datetime import datetime
+from typing import Literal
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
+from app.attribution import FailureRow, build_attribution, message_prefix
 from app.auth import authenticate_user, create_access_token, get_current_user, require_bioops
 from app.database import SessionLocal, get_db
 from app.models import Job, JobStage, Sample
 from app.pipeline.runner import create_job_stages, run_pipeline_sync
 from app.schemas import (
+    AttributionOut,
     HealthOut,
     JobCreate,
     JobListItem,
@@ -126,4 +134,105 @@ def get_job_stages(
         .filter(JobStage.job_id == job_id)
         .order_by(JobStage.stage_order)
         .all()
+    )
+
+
+def _failure_rows(
+    db: Session,
+    start: datetime | None,
+    end: datetime | None,
+    broken: str,
+) -> list[FailureRow]:
+    """Failed stages joined with jobs; skipped stages are never attribution input."""
+    q = (
+        db.query(JobStage, Job, Sample.is_broken)
+        .join(Job, JobStage.job_id == Job.id)
+        .outerjoin(Sample, Job.sample_id == Sample.id)
+        .filter(JobStage.status == "failed")
+    )
+    if start is not None:
+        q = q.filter(Job.created_at >= start)
+    if end is not None:
+        q = q.filter(Job.created_at <= end)
+    if broken == "true":
+        q = q.filter(func.coalesce(Sample.is_broken, False).is_(True))
+    elif broken == "false":
+        q = q.filter(func.coalesce(Sample.is_broken, False).is_(False))
+
+    rows = []
+    for stage, job, is_broken in q.order_by(Job.id.desc()).all():
+        rows.append(
+            FailureRow(
+                job_id=job.id,
+                sample_name=job.sample_name,
+                is_broken=bool(is_broken),
+                created_by=job.created_by,
+                job_created_at=job.created_at,
+                actor_name=stage.actor_name,
+                message=stage.message,
+                stage_finished_at=stage.finished_at,
+            )
+        )
+    return rows
+
+
+@router.get("/failures/attribution", response_model=AttributionOut)
+def failure_attribution(
+    _user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    start: datetime | None = Query(default=None, description="起始时间（含），ISO8601"),
+    end: datetime | None = Query(default=None, description="截止时间（含），ISO8601"),
+    broken: Literal["all", "true", "false"] = Query(
+        default="all", description="按样例是否损坏过滤"
+    ),
+):
+    """按失败 Actor 计数 + 消息前缀聚类；过滤全部在服务端完成。"""
+    return build_attribution(_failure_rows(db, start, end, broken))
+
+
+@router.get("/failures/attribution/export")
+def failure_attribution_export(
+    _user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    broken: Literal["all", "true", "false"] = Query(default="all"),
+):
+    """当前筛选结果的后端摘录下载（CSV，UTF-8 BOM）。"""
+    rows = _failure_rows(db, start, end, broken)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "作业ID",
+            "样例",
+            "是否损坏",
+            "失败Actor",
+            "消息前缀簇",
+            "失败消息",
+            "提交人",
+            "作业创建时间",
+            "阶段完成时间",
+        ]
+    )
+    for r in rows:
+        writer.writerow(
+            [
+                r.job_id,
+                r.sample_name,
+                "损坏" if r.is_broken else "合格",
+                r.actor_name,
+                message_prefix(r.message),
+                r.message or "",
+                r.created_by,
+                r.job_created_at.isoformat() if r.job_created_at else "",
+                r.stage_finished_at.isoformat() if r.stage_finished_at else "",
+            ]
+        )
+    content = buf.getvalue().encode("utf-8-sig")
+    filename = f"failure-attribution-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

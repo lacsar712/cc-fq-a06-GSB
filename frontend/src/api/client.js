@@ -62,4 +62,25 @@ export async function createJob(body) {
   return data
 }
 
+export async function getFailureAttribution(params) {
+  const { data } = await api.get('/failures/attribution', { params })
+  return data
+}
+
+export async function downloadFailureExcerpt(params) {
+  const res = await api.get('/failures/attribution/export', {
+    params,
+    responseType: 'blob',
+  })
+  const disposition = res.headers['content-disposition'] || ''
+  const match = disposition.match(/filename="?([^";]+)"?/)
+  const filename = match ? match[1] : 'failure-attribution.csv'
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export default api
